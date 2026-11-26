@@ -68,9 +68,37 @@ local S = {
    fullbright   = false,
    -- misc
    antiAfk      = true,
+   inputMethod  = "Auto",
 }
 
+local VU = game:GetService("VirtualUser")
+
+local function toolActivate()
+   local char = LocalPlayer.Character
+   local tool = char and char:FindFirstChildOfClass("Tool")
+   if tool then return pcall(function() tool:Activate() end) end
+   return false
+end
+
+local function vimClick(btn)
+   local id = (btn == "L") and 0 or 1
+   VIM:SendMouseButtonEvent(0, 0, id, true, game, 1)
+   task.wait(0.02)
+   VIM:SendMouseButtonEvent(0, 0, id, false, game, 1)
+end
+
+local function vuClick()
+   pcall(function()
+      VU:CaptureController()
+      VU:ClickButton1(Vector2.new(100, 100))
+   end)
+end
+
 local function mDown(btn)
+   if S.inputMethod == "Tool" then
+      if btn == "L" then toolActivate() end
+      return
+   end
    if btn == "L" then
       if type(mouse1down) == "function" then pcall(mouse1down) else VIM:SendMouseButtonEvent(0, 0, 0, true, game, 1) end
    else
@@ -79,6 +107,7 @@ local function mDown(btn)
 end
 
 local function mUp(btn)
+   if S.inputMethod == "Tool" then return end
    if btn == "L" then
       if type(mouse1release) == "function" then pcall(mouse1release) else VIM:SendMouseButtonEvent(0, 0, 0, false, game, 1) end
    else
@@ -87,6 +116,22 @@ local function mUp(btn)
 end
 
 local function click(btn, hold)
+   local m = S.inputMethod
+   if m == "Tool" then
+      if btn == "L" then toolActivate() end
+      return
+   end
+   if m == "VirtualUser" then
+      if btn == "L" then vuClick() end
+      return
+   end
+   if m == "VIM" then
+      vimClick(btn)
+      return
+   end
+   if m == "Auto" and btn == "L" and type(mouse1click) == "function" then
+      return pcall(mouse1click)
+   end
    mDown(btn)
    task.wait(hold or 0.03)
    mUp(btn)
@@ -147,9 +192,15 @@ local function teleportBehind(plr)
    if not (root and troot) then return false end
 
    local behind = troot.Position - troot.CFrame.LookVector * 2.8 + Vector3.new(0, 1, 0)
-   pcall(function()
-      char:PivotTo(CFrame.lookAt(behind, troot.Position))
-   end)
+   local goal = CFrame.lookAt(behind, troot.Position)
+
+   pcall(function() char:PivotTo(goal) end)
+   if (root.Position - behind).Magnitude > 4 then
+      pcall(function() root.CFrame = goal end)
+   end
+   if (root.Position - behind).Magnitude > 4 then
+      pcall(function() char:MoveTo(behind) end)
+   end
    return true
 end
 
@@ -160,6 +211,12 @@ local function flingTarget(plr)
    local troot = tchar and tchar:FindFirstChild("HumanoidRootPart")
    local thead = tchar and tchar:FindFirstChild("Head")
    if not (root and troot) then return end
+
+   if S.flingMode == "Network" then
+      pcall(function() troot:SetNetworkOwner(nil) end)
+      task.wait(0.02)
+      pcall(function() troot.CFrame = troot.CFrame + Vector3.new(0, 3, 0) end)
+   end
 
    if S.flingMode == "Head-on" and thead then
       root.CFrame = thead.CFrame
@@ -275,16 +332,36 @@ end)
 -- ============================ aim ============================
 
 local rageAim = false
-RunService.RenderStepped:Connect(function(dt)
+local aimCam = false
+local lastAim = os.clock()
+
+local function aimStep()
    if not (rageAim or S.aimAssist) then return end
+   local now = os.clock()
+   local dt = math.min(now - lastAim, 0.1)
+   lastAim = now
+
    local plr = pickTarget(S.aimRange)
    if not plr then return end
    local part = aimPartOf(plr.Character)
    if not part then return end
-   local desired = CFrame.lookAt(Camera.CFrame.Position, part.Position)
-   local speed = rageAim and 55 or S.assisSmooth
-   Camera.CFrame = Camera.CFrame:Lerp(desired, math.clamp(dt * speed, 0.02, 1))
-end)
+
+   if aimCam or type(mousemoverel) ~= "function" then
+      local desired = CFrame.lookAt(Camera.CFrame.Position, part.Position)
+      local speed = rageAim and 55 or S.assisSmooth
+      Camera.CFrame = Camera.CFrame:Lerp(desired, math.clamp(dt * speed, 0.02, 1))
+   else
+      local screenPos, onScreen = Camera:WorldToViewportPoint(part.Position)
+      if onScreen then
+         local vp = Camera.ViewportSize
+         local dx = (screenPos.X - vp.X * 0.5) * 0.35
+         local dy = (screenPos.Y - vp.Y * 0.5) * 0.35
+         pcall(mousemoverel, dx, dy)
+      end
+   end
+end
+
+RunService:BindToRenderStep("NexiAim", Enum.RenderPriority.Camera.Value + 1, aimStep)
 
 -- ============================ ESP ============================
 
@@ -628,6 +705,32 @@ Rage:CreateSlider({
    Flag = "GrabRange",
    Callback = function(v) S.grabRange = v end,
 })
+Rage:CreateSection("Ввод")
+Rage:CreateDropdown({
+   Name = "Метод ввода",
+   Options = { "Auto", "Executor", "VIM", "VirtualUser", "Tool" },
+   CurrentOption = { "Auto" },
+   Flag = "InputMethod",
+   Callback = function(opt)
+      local m = type(opt) == "table" and opt[1] or opt
+      if m == "Executor" then m = "Auto" end
+      S.inputMethod = m
+   end,
+})
+Rage:CreateButton({
+   Name = "Тест: перебрать методы",
+   Callback = function()
+      task.spawn(function()
+         for _, m in ipairs({ "VirtualUser", "VIM", "Tool", "Auto" }) do
+            S.inputMethod = m
+            click("L", 0.05)
+            task.wait(0.7)
+         end
+         S.inputMethod = "Auto"
+      end)
+   end,
+})
+
 Rage:CreateSection("Позиция")
 Rage:CreateToggle({
    Name = "TP за спину (при нажатии Z)",
@@ -659,7 +762,7 @@ Rage:CreateToggle({
 Rage:CreateSection("Флинг")
 Rage:CreateDropdown({
    Name = "Режим флинга",
-   Options = { "Velocity", "Spin", "Head-on" },
+   Options = { "Velocity", "Spin", "Head-on", "Network" },
    CurrentOption = { "Velocity" },
    Flag = "FlingMode",
    Callback = function(opt)
@@ -685,6 +788,12 @@ Rage:CreateButton({
    end,
 })
 Rage:CreateSection("Наведение")
+Rage:CreateToggle({
+   Name = "Захват камеры (если мышь не двигает)",
+   CurrentValue = false,
+   Flag = "AimCam",
+   Callback = function(v) aimCam = v end,
+})
 Rage:CreateToggle({
    Name = "Жёсткий aim",
    CurrentValue = false,
